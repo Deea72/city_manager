@@ -32,19 +32,154 @@ int nrreports = 0;
 // recording every action performed on that district,
 // with timestamp, declared role, and declared user name
 
-
-void update_threshold(char *district_path, int new_threshold)
+void list_report(REPORT r)
 {
+    printf("Report_id: %d\n", r.id);
+    printf ("Inspector name %s\n", r.nume);
+    printf("GPS: -latitude: %f  -longitude: %f\n" , r.latitude, r.longitude);
+    printf("Issue category: %s\n", r.issue);
+    printf("Severity level: %d\n", r.severity);
+    printf("Timestamp: %s\n", ctime(&r.Timestamp));
+    printf("Description: %s\n", r.Description);
+}
 
+/**
+ * Splits a condition string (e.g., "s:>2") into its components.
+ * 
+ * param input The raw string to parse.
+ * param field Pointer to store the field character.
+ * param op    Pointer to store the operator string (should be size 3 to be safe).
+ * param value Pointer to store the value string.
+ * return      1 on success, 0 on failure.
+ */
+int parse_condition(const char *input, char *field, char *op, char *value) {
+    if (input == NULL || field == NULL || op == NULL || value == NULL) {
+        return 0;
+    }
+
+    // sscanf logic:
+    // %c      : reads the first character (the field)
+    // :       : matches the literal colon
+    // %2[^:]  : reads up to 2 characters that are NOT a colon (the operator)
+    // :       : matches the second literal colon
+    // %s      : reads the remaining string (the value)
+    
+    int items = sscanf(input, "%c:%2[^:]:%s", field, op, value);
+
+    // We expect exactly 3 items to be successfully matched
+    if (items == 3) {
+        return 1;
+    }
+
+    return 0;
+}
+
+
+int match_condition(REPORT *r, char field, const char *op, const char *value) {
+    if (!r || !op || !value) return 0;
+
+    switch (field) {
+        // --- Severity (Integer) ---
+        case 's': {
+            int val = atoi(value);
+            if (strcmp(op, "==") == 0) return r->severity == val;
+            if (strcmp(op, "!=") == 0) return r->severity != val;
+            if (strcmp(op, "<")  == 0) return r->severity <  val;
+            if (strcmp(op, "<=") == 0) return r->severity <= val;
+            if (strcmp(op, ">")  == 0) return r->severity >  val;
+            if (strcmp(op, ">=") == 0) return r->severity >= val;
+            break;
+        }
+
+        // --- Category/Issue (String) ---
+        case 'c': {
+            int cmp = strcmp(r->issue, value);
+            if (strcmp(op, "==") == 0) return cmp == 0;
+            if (strcmp(op, "!=") == 0) return cmp != 0;
+            if (strcmp(op, "<")  == 0) return cmp <  0;
+            if (strcmp(op, "<=") == 0) return cmp <= 0;
+            if (strcmp(op, ">")  == 0) return cmp >  0;
+            if (strcmp(op, ">=") == 0) return cmp >= 0;
+            break;
+        }
+
+        // --- Inspector Name (String) ---
+        case 'n': {
+            int cmp = strcmp(r->nume, value);
+            if (strcmp(op, "==") == 0) return cmp == 0;
+            if (strcmp(op, "!=") == 0) return cmp != 0;
+            if (strcmp(op, "<")  == 0) return cmp <  0;
+            if (strcmp(op, "<=") == 0) return cmp <= 0;
+            if (strcmp(op, ">")  == 0) return cmp >  0;
+            if (strcmp(op, ">=") == 0) return cmp >= 0;
+            break;
+        }
+
+        // --- Timestamp (time_t) ---
+        case 't': {
+            time_t val = (time_t)atoll(value);
+            double diff = difftime(r->Timestamp, val);
+            if (strcmp(op, "==") == 0) return diff == 0;
+            if (strcmp(op, "!=") == 0) return diff != 0;
+            if (strcmp(op, "<")  == 0) return diff <  0;
+            if (strcmp(op, "<=") == 0) return diff <= 0;
+            if (strcmp(op, ">")  == 0) return diff >  0;
+            if (strcmp(op, ">=") == 0) return diff >= 0;
+            break;
+        }
+
+        default:
+            return 0;
+    }
+    return 0;
+}
+
+void filer(char *district_path, char *condition)
+{
     char reports_path[256] ="";
     strcpy(reports_path, district_path);
     strcat(reports_path, "/reports.dat");
 
+    int freports = open(reports_path, O_RDWR);
+    if (freports == -1) {
+        printf("Error: Could not open reports file.\n");
+        return;
+    }
+
+    char field;
+    char o[3];
+    char v[50];
+
+    REPORT r;
+    while (read(freports, &r, sizeof(REPORT)) == sizeof(REPORT))
+    {
+         if(parse_condition( condition, &field, o, v))
+        {
+           if((match_condition(&r, field, o, v))) // 1 for true condition
+           {
+                list_report(r);
+           }
+        }
+    }
+
+    close(freports);
+
+
+}
+
+
+void update_threshold(char *district_path, int new_threshold)
+{
+
+    char threshold_path[256] ="";
+    strcpy(threshold_path, district_path);
+    strcat(threshold_path, "/district.cfg");
+
     struct stat st;
     //int flag=0;  // 1 if perrmisions are 0640
 
-    if (stat(district_path, &st) == -1) {
-        printf("Error: Could not access %s\n", district_path);
+    if (stat(threshold_path, &st) == -1) {
+        printf("Error: Could not access %s\n", threshold_path);
         return;
     }
 
@@ -53,8 +188,8 @@ void update_threshold(char *district_path, int new_threshold)
         return;
     }
 
-    int fd = open(district_path, O_WRONLY | O_TRUNC);
-    if (fd == -1) {
+    int fcfg = open(threshold_path, O_WRONLY | O_TRUNC);
+    if (fcfg == -1) {
         printf("Error: Could not open %s for writing.\n", district_path);
         return;
     }
@@ -62,11 +197,11 @@ void update_threshold(char *district_path, int new_threshold)
     char buffer[50];
     int length = snprintf(buffer, sizeof(buffer), "threshold=%d\n", new_threshold);
 
-    write(fd, buffer, length);
+    write(fcfg, buffer, length);
 
     printf("Severity threshold successfully updated to %d.\n", new_threshold);
 
-    close(fd);
+    close(fcfg);
 }
 
 
@@ -124,17 +259,6 @@ void remove_report(char *district_path, int target_id)
     printf("Report %d successfully removed.\n", target_id);
 
     close(fd);
-}
-
-void list_report(REPORT r)
-{
-    printf("Report_id: %d\n", r.id);
-    printf ("Inspector name %s\n", r.nume);
-    printf("GPS: -latitude: %f  -longitude: %f\n" , r.latitude, r.longitude);
-    printf("Issue category: %s\n", r.issue);
-    printf("Severity level: %d\n", r.severity);
-    printf("Timestamp: %s\n", ctime(&r.Timestamp));
-    printf("Description: %s\n", r.Description);
 }
 
 
@@ -419,7 +543,11 @@ int main(int argc, char* argv[])
 
             if(strcmp(argv[5], "--filter") == 0)
             {
-                printf("Trebuie implementat\n");
+                if (argc >= 8) {
+                    filer(argv[6], argv[7]); // argv[6] is district, argv[7] is condition
+                } else {
+                    printf("Error: --filter requires a district and a condition.\n");
+                }
             }
 
 
