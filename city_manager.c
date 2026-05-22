@@ -188,8 +188,8 @@ void update_threshold(char *district_path, int new_threshold)
         return;
     }
 
-    int fcfg = open(threshold_path, O_WRONLY | O_TRUNC);
-    if (fcfg == -1) {
+    int fthreshold = open(threshold_path, O_WRONLY | O_TRUNC);
+    if (fthreshold == -1) {
         printf("Error: Could not open %s for writing.\n", district_path);
         return;
     }
