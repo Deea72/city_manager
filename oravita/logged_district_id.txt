@@ -1,0 +1,2 @@
+--list Fri May 22 19:52:34 2026
+ manager alice

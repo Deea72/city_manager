@@ -3,13 +3,14 @@
 #include <string.h>
 #include <time.h>
 #include <fcntl.h> //open
-#include <unistd.h>   // For write(), close()
+#include <unistd.h>   // For write(), close(), symlink()
 #include <sys/stat.h> // For chmod()
+#include <sys/wait.h> // for wait()
 
 //inspector    doua roluri
 //manager
 
-//A district directory has
+//A district_id directory has
 // --> report (reports.dat )
 typedef struct
 {
@@ -24,12 +25,12 @@ typedef struct
 
 int nrreports = 0;
 
-// --> configuration file (district.cfg)
+// --> configuration file (district_id.cfg)
 // storing at least a severity threshold =
 // the minimum level that should trigger an escalation alert
 
-//-->operation log (logged_district)
-// recording every action performed on that district,
+//-->operation log (logged_district_id)
+// recording every action performed on that district_id,
 // with timestamp, declared role, and declared user name
 
 void list_report(REPORT r)
@@ -39,8 +40,9 @@ void list_report(REPORT r)
     printf("GPS: -latitude: %f  -longitude: %f\n" , r.latitude, r.longitude);
     printf("Issue category: %s\n", r.issue);
     printf("Severity level: %d\n", r.severity);
-    printf("Timestamp: %s\n", ctime(&r.Timestamp));
+    printf("Timestamp: %s", ctime(&r.Timestamp));  //time already has \n
     printf("Description: %s\n", r.Description);
+    printf("\n");
 }
 
 /**
@@ -134,11 +136,10 @@ int match_condition(REPORT *r, char field, const char *op, const char *value) {
     return 0;
 }
 
-void filer(char *district_path, char *condition)
+void filer(char *district_id, char *condition)
 {
     char reports_path[256] ="";
-    strcpy(reports_path, district_path);
-    strcat(reports_path, "/reports.dat");
+    snprintf(reports_path, sizeof(reports_path),"%s/reports.dat", district_id);
 
     int freports = open(reports_path, O_RDWR);
     if (freports == -1) {
@@ -168,15 +169,13 @@ void filer(char *district_path, char *condition)
 }
 
 
-void update_threshold(char *district_path, int new_threshold)
+void update_threshold(char *district_id, int new_threshold)
 {
 
     char threshold_path[256] ="";
-    strcpy(threshold_path, district_path);
-    strcat(threshold_path, "/district.cfg");
+    snprintf(threshold_path, sizeof(threshold_path), "%s/district_id.cfg", district_id);
 
     struct stat st;
-    //int flag=0;  // 1 if perrmisions are 0640
 
     if (stat(threshold_path, &st) == -1) {
         printf("Error: Could not access %s\n", threshold_path);
@@ -184,32 +183,67 @@ void update_threshold(char *district_path, int new_threshold)
     }
 
     if ((st.st_mode & 0777) != 0640) {
-        printf("Error: Can't update the threshold !  Prmissions for district.cfg are not 640.\n");
+        printf("Error: Can't update the threshold !  Prmissions for district_id.cfg are not 640.\n");
         return;
     }
 
-    int fthreshold = open(threshold_path, O_WRONLY | O_TRUNC);
-    if (fthreshold == -1) {
-        printf("Error: Could not open %s for writing.\n", district_path);
+    int f_cfg = open(threshold_path, O_WRONLY | O_TRUNC);
+    if (f_cfg == -1) {
+        printf("Error: Could not open %s for writing.\n", district_id);
         return;
     }
 
     char buffer[50];
     int length = snprintf(buffer, sizeof(buffer), "threshold=%d\n", new_threshold);
 
-    write(fcfg, buffer, length);
+    write(f_cfg, buffer, length);
 
     printf("Severity threshold successfully updated to %d.\n", new_threshold);
 
-    close(fcfg);
+    close(f_cfg);
 }
 
 
-void remove_report(char *district_path, int target_id)
+void remove_district(char *district_id)
+{
+    char link_name[256] = "";
+    snprintf(link_name, sizeof(link_name), "active_reports-%s", district_id);
+
+    struct stat lst;
+    if (lstat(link_name, &lst) == 0)
+    {
+        if (S_ISLNK(lst.st_mode))
+        {
+
+            unlink(link_name);
+            printf("Old symlink removed.\n");   //delete the old ones to be up to date
+        }
+    }
+
+    int pid;
+    if( ( pid=fork() ) < 0)
+    {
+        perror("Error child process\n");
+        exit(1);
+    }
+    if(pid==0)
+    {
+
+        //rm -rf <district_id_directory>
+        execlp("rm", "rm", "-rf", district_id , NULL);
+        printf("Codul a esuat\n");
+        exit(0); // apel necesar pentru a se opri codul fiului astfel incat acesta sa nu execute si codul parintelui
+    }
+
+    int status;
+    wait(&status);
+}
+
+
+void remove_report(char *district_id, int target_id)
  {
     char reports_path[256] ="";
-    strcpy(reports_path, district_path);
-    strcat(reports_path, "/reports.dat");
+    snprintf(reports_path, sizeof(reports_path), "%s/reports.dat", district_id);
 
     int fd = open(reports_path, O_RDWR);
     if (fd == -1) {
@@ -262,15 +296,15 @@ void remove_report(char *district_path, int target_id)
 }
 
 
-void view(char *district_path, int target_id)
+void view(char *district_id, int target_id)
 {
     char filepath[100];
 
-    snprintf(filepath, sizeof(filepath), "%s/reports.dat", district_path);
+    snprintf(filepath, sizeof(filepath), "%s/reports.dat", district_id);
 
     int fd = open(filepath, O_RDONLY);
     if (fd == -1) {
-        printf("Error: Could not open reports file for district '%s'.\n", district_path);
+        printf("Error: Could not open reports file for district_id '%s'.\n", district_id);
         return;
     }
 
@@ -288,7 +322,7 @@ void view(char *district_path, int target_id)
 
     //report not found
     if (found == 0) {
-        printf("Report ID %d not found in district '%s'.\n", target_id, district_path);
+        printf("Report ID %d not found in district_id '%s'.\n", target_id, district_id);
     }
 
 
@@ -323,11 +357,10 @@ void print_permissions(mode_t mode) {
 
 
 
-void list(char *district_path)
+void list(char *district_id)
 {
     char reports_path[256] ="";
-    strcpy(reports_path, district_path);
-    strcat(reports_path, "/reports.dat");
+    snprintf(reports_path, sizeof(reports_path), "%s/reports.dat", district_id);
 
     struct stat st;
 
@@ -355,18 +388,15 @@ void list(char *district_path)
 }
 
 
-
-
-void add(char *district, char *nume_user)  //append a new report
+void add(char *district_id, char *nume_user)  //append a new report
 {
-    srand(time(NULL));
     REPORT nou;
     nou.id = rand()%1000;
     strcpy( nou.nume, nume_user);
     nou.latitude = 0;
     nou.longitude = 0;  //initialization on 0
     strcpy(nou.issue,"");
-    nou.severity = 0;
+    nou.severity = rand()%3 + 1;
     strcpy(nou.Description,"");
     nou.Timestamp = time(NULL);
 
@@ -374,53 +404,76 @@ void add(char *district, char *nume_user)  //append a new report
 
     struct stat st;
 
-    if (stat(district, &st) == 0) {
+    if (stat(district_id, &st) == 0) {
         if (!S_ISDIR(st.st_mode))  //it s not a directory
         {
-            printf("Error '%s' is a file not a directory\n", district);
+            printf("Error '%s' is a file not a directory\n", district_id);
             exit(-1);
         }
     }
-    else   //if the directory does not exist we make it + district.cfg file + logged_district file
+    else   //if the directory does not exist we make it + district_id.cfg file + logged_district_id file
     {
-        if (mkdir(district, 0777) == -1)
+        if (mkdir(district_id, 0777) == -1)
         {
             perror("Error mkdir!");
             exit(-1);
         }
-        char path[256] ="";
-        strcpy(path,district);
-        strcat(path, "/district.cfg");
 
-        int configuration = open(path, O_RDWR |O_CREAT, 0664);//district.cfg file  storing severity threshold
-        if(configuration == -1)
+        char path_cfg[256];
+        snprintf(path_cfg, sizeof(path_cfg), "%s/district_id.cfg", district_id);
+
+        int f_cfg = open(path_cfg, O_RDWR |O_CREAT, 0664);//district_id.cfg file  storing severity threshold
+        if(f_cfg == -1)
         {
             perror("Error opening config.cnf\n");
             exit(-1);
         }
 
-       int severity = 3;
-        write(configuration, &severity, sizeof(int));
-        close(configuration);
+
+        int severity = rand()%3+1;
+        write(f_cfg, &severity, sizeof(int));
+        close(f_cfg);
 
 
 
     }
 
 
-    char path[256] ="";
-    strcpy(path, district);
-    strcat(path, "/reports.dat");
+    char path_rep[256] ="";
+    snprintf(path_rep, sizeof(path_rep), "%s/reports.dat", district_id);
 
-    int reports = open(path, O_RDWR | O_APPEND | O_CREAT, 0664);    //reports.dat file
-    if (reports == -1)
+    int f_reports = open(path_rep, O_RDWR | O_APPEND | O_CREAT, 0664);    //reports.dat file
+    if (f_reports == -1)
     {
         perror("Error opening reports.dat\n");
         return;
     }
 
-    write(reports, &nou, sizeof(REPORT));
-    close(reports);
+    write(f_reports, &nou, sizeof(REPORT));
+    close(f_reports);
+
+    char link_name[256] = "";
+    snprintf(link_name, sizeof(link_name), "active_reports-%s", district_id);
+
+    struct stat lst;
+    if (lstat(link_name, &lst) == 0)
+    {
+        if (S_ISLNK(lst.st_mode))
+        {
+
+            unlink(link_name);
+            //printf("Old symlink removed.\n");   //delete the old ones to be up to date
+        }
+    }
+
+    if (lstat(link_name, &lst) == -1)
+    {
+        if (symlink(path_rep, link_name) == -1) {
+            perror("Warning: Could not create symbolic link");
+        }
+    }
+
+
 
 
 }
@@ -429,9 +482,10 @@ void add(char *district, char *nume_user)  //append a new report
 
 int main(int argc, char* argv[])
 {
+    srand(time(NULL));
     int role=0;  //r = 1 pentru inspector, r = 2 pentru manager
     char nume[20]="";  //user name
-    //char district_id[20]= "";   //pentru functia de add
+    //char district_id_id[20]= "";   //pentru functia de add
 
     if (argc < 5)
     {
@@ -465,7 +519,7 @@ int main(int argc, char* argv[])
             {
                 if (argc >= 7)
                 {
-                    add(argv[6], nume);       //argv[6] is id district or district name
+                    add(argv[6], nume);       //argv[6] is id district_id or district_id name
                 } else
                 {
                     perror("Error: Missing argument for --add\n");
@@ -487,7 +541,7 @@ int main(int argc, char* argv[])
 
             if (strcmp(argv[5], "--view") == 0)
             {
-                //argv[6] district id
+                //argv[6] district_id id
                 //argv[7] report id
                 if (argc >= 8)
                 {
@@ -503,7 +557,7 @@ int main(int argc, char* argv[])
 
             if(strcmp(argv[5], "--remove_report") == 0)
             {
-                //argv[6] district id
+                //argv[6] district_id id
                 //argv[7] report id
 
                 if (argc >= 8)
@@ -525,7 +579,7 @@ int main(int argc, char* argv[])
 
             if(strcmp(argv[5], "--update_threshold") == 0)
             {
-                //argv[6] district id
+                //argv[6] district_id id
                 //argv[7] value
                 if (argc >= 8)
                 {
@@ -544,21 +598,35 @@ int main(int argc, char* argv[])
             if(strcmp(argv[5], "--filter") == 0)
             {
                 if (argc >= 8) {
-                    filer(argv[6], argv[7]); // argv[6] is district, argv[7] is condition
+                    filer(argv[6], argv[7]); // argv[6] is district_id, argv[7] is condition
                 } else {
-                    printf("Error: --filter requires a district and a condition.\n");
+                    printf("Error: --filter requires a district_id and a condition.\n");
                 }
+            }
+
+            if (strcmp(argv[5], "--remove_district") == 0)   //PHASE 2
+            {
+
+                //argv[6]  district_id_id
+                if (argc >= 7)
+                {
+                    if(role == 2)
+                        remove_district(argv[6]);
+                    else
+                        printf("YOU ARE NOT A MANAGER ! (you don't have persmision for this)\n");
+                }
+
             }
 
 
         }
 
-        char path[256] = "";
-        strcpy(path, argv[6] );
-        strcat(path, "/logged_district");
+        char path_log[256] = "";
+        snprintf(path_log, sizeof(path_log), "%s/logged_district_id.txt", argv[6]);
+
        // printf("%s", path);
 
-        int log = open(path, O_RDWR | O_CREAT, 0664 );
+        int log = open(path_log, O_RDWR | O_CREAT, 0664 );
         if(log == -1)
         {
             perror("Error opening loggg\n");
@@ -567,25 +635,15 @@ int main(int argc, char* argv[])
 
         struct stat st;
 
-        if (stat(path, &st) == -1)
+        if (stat(path_log, &st) == -1)
         {
-            printf("Error: Could not access %s\n", path);
+            printf("Error: Could not access %s\n", path_log);
             exit(-1);
         }
 
         char operationlog[1024] = "";  //operation Time Role User
-        strcat(operationlog, argv[5]);
-        strcat(operationlog," ");
-        strcat(operationlog, ctime(&st.st_mtime));
-        strcat(operationlog, " ");
-        if(role == 1)
-            strcat (operationlog, "inspector");
-        else
-            if(role==2)
-                strcat(operationlog, "manager");
-        strcat(operationlog, " ");
-        strcat( operationlog, argv[4]);
-        strcat(operationlog, "\n");
+        snprintf(operationlog, sizeof(operationlog), "%s %s %s %s\n", argv[5], ctime(&st.st_mtime), argv[2], argv[4]);
+
 
         write(log, operationlog, strlen(operationlog));
 
