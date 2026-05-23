@@ -6,6 +6,7 @@
 #include <unistd.h>   // For write(), close(), symlink()
 #include <sys/stat.h> // For chmod()
 #include <sys/wait.h> // for wait()
+#include <signal.h>
 
 //inspector    doua roluri
 //manager
@@ -29,7 +30,7 @@ int nrreports = 0;
 // storing at least a severity threshold =
 // the minimum level that should trigger an escalation alert
 
-//-->operation log (logged_district_id)
+//-->operation log (logged_district)
 // recording every action performed on that district_id,
 // with timestamp, declared role, and declared user name
 
@@ -171,7 +172,6 @@ void filer(char *district_id, char *condition)
 
 void update_threshold(char *district_id, int new_threshold)
 {
-
     char threshold_path[256] ="";
     snprintf(threshold_path, sizeof(threshold_path), "%s/district_id.cfg", district_id);
 
@@ -245,8 +245,8 @@ void remove_report(char *district_id, int target_id)
     char reports_path[256] ="";
     snprintf(reports_path, sizeof(reports_path), "%s/reports.dat", district_id);
 
-    int fd = open(reports_path, O_RDWR);
-    if (fd == -1) {
+    int f_rep = open(reports_path, O_RDWR);
+    if (f_rep == -1) {
         printf("Error: Could not open reports file.\n");
         return;
     }
@@ -254,9 +254,9 @@ void remove_report(char *district_id, int target_id)
     //Find the report
     REPORT r;
     off_t target_pos = -1; //store the exact byte location of the report
-    while (read(fd, &r, sizeof(REPORT)) == sizeof(REPORT)) {
+    while (read(f_rep, &r, sizeof(REPORT)) == sizeof(REPORT)) {
         if (r.id == target_id) {
-            target_pos = lseek(fd, 0, SEEK_CUR) - sizeof(REPORT);  //the cursor is after the report so target_pos si the start of the report
+            target_pos = lseek(f_rep, 0, SEEK_CUR) - sizeof(REPORT);  //the cursor is after the report so target_pos si the start of the report
             break;  //report found
         }
     }
@@ -264,7 +264,7 @@ void remove_report(char *district_id, int target_id)
     //report not found
     if (target_pos == -1) {
         printf("Report %d not found.\n", target_id);
-        close(fd);
+        close(f_rep);
         return;
     }
 
@@ -273,14 +273,14 @@ void remove_report(char *district_id, int target_id)
 
     while (1) {
 
-        lseek(fd, read_pos, SEEK_SET);
-        if (read(fd, &r, sizeof(REPORT)) <= 0) {
+        lseek(f_rep, read_pos, SEEK_SET);
+        if (read(f_rep, &r, sizeof(REPORT)) <= 0) {
             break; // We reached the end of the file
         }
 
         // Go back and overwrite the old position
-        lseek(fd, write_pos, SEEK_SET);
-        write(fd, &r, sizeof(REPORT));
+        lseek(f_rep, write_pos, SEEK_SET);
+        write(f_rep, &r, sizeof(REPORT));
 
         // Move our trackers forward by one struct size
         write_pos += sizeof(REPORT);
@@ -289,10 +289,10 @@ void remove_report(char *district_id, int target_id)
     }
 
     //Cutting the last report
-    ftruncate(fd, write_pos);
+    ftruncate(f_rep, write_pos);
     printf("Report %d successfully removed.\n", target_id);
 
-    close(fd);
+    close(f_rep);
 }
 
 
@@ -387,6 +387,9 @@ void list(char *district_id)
     close(fd);
 }
 
+int monitor_informed = 0; // o failed, 1 = success (Phase 2)
+int f_log; //global so it can be accesed from add and main
+struct stat st; //
 
 void add(char *district_id, char *nume_user)  //append a new report
 {
@@ -411,7 +414,7 @@ void add(char *district_id, char *nume_user)  //append a new report
             exit(-1);
         }
     }
-    else   //if the directory does not exist we make it + district_id.cfg file + logged_district_id file
+    else   //if the directory does not exist we make it + district_id.cfg file + logged_district file
     {
         if (mkdir(district_id, 0777) == -1)
         {
@@ -473,6 +476,51 @@ void add(char *district_id, char *nume_user)  //append a new report
         }
     }
 
+    //phase 2
+    int f_pid = open(".monitor_pid", O_RDONLY);
+    if(f_pid != -1)
+    {
+        char pid_buffer[32];
+        ssize_t bytes_read = read(f_pid, pid_buffer, sizeof(pid_buffer) - 1);
+
+        if (bytes_read > 0)
+        {
+            pid_buffer[bytes_read] = '\0';
+            pid_t monitor_pid = (pid_t)atoi(pid_buffer);
+
+            // kill(pid, signal) sends a signal to another process.
+            if(monitor_pid > 0)
+            {
+                if (kill(monitor_pid, SIGUSR1) == 0)
+                    monitor_informed = 1;
+                else
+                {
+                    perror("FOund PID but could not send SIGUSR1\n");
+                }
+            }
+        }
+        close(f_pid);
+
+        char monitor_inf[256];
+        if(monitor_informed == 1)
+        {
+            snprintf( monitor_inf, sizeof(monitor_inf), "Monitor successfully notified\n");
+        }
+        else
+        {
+            snprintf( monitor_inf, sizeof(monitor_inf), "Failed to notify the monitor\n");
+
+        }
+
+        write(f_log, monitor_inf, strlen(monitor_inf));
+    }
+    else
+    {
+        printf("Notice: Monitor process is not currently active.\n");
+    }
+
+
+
 
 
 
@@ -515,6 +563,26 @@ int main(int argc, char* argv[])
 
         if(argv[5])
         {
+            //writing in the log
+            //----------------------
+            char path_log[256] = "";
+            snprintf(path_log, sizeof(path_log), "%s/logged_district.txt", argv[6]);
+
+
+            f_log = open(path_log, O_RDWR | O_CREAT, 0664 );
+            if(f_log == -1)
+            {
+                perror("Error opening loggg\n");
+                exit(-1);
+            }
+
+            if (stat(path_log, &st) == -1)
+            {
+                printf("Error: Could not access %s\n", path_log);
+                exit(-1);
+            }
+            //-----------------------------
+
             if(strcmp(argv[5], "--add") == 0)
             {
                 if (argc >= 7)
@@ -619,35 +687,17 @@ int main(int argc, char* argv[])
             }
 
 
+            char operationlog[1024] = "";  //operation Time Role User
+            snprintf(operationlog, sizeof(operationlog), "%s %s %s %s\n", argv[5], ctime(&st.st_mtime), argv[2], argv[4]);
+
+
+            write(f_log, operationlog, strlen(operationlog));
+
+            close(f_log);
+
         }
 
-        char path_log[256] = "";
-        snprintf(path_log, sizeof(path_log), "%s/logged_district_id.txt", argv[6]);
 
-       // printf("%s", path);
-
-        int log = open(path_log, O_RDWR | O_CREAT, 0664 );
-        if(log == -1)
-        {
-            perror("Error opening loggg\n");
-            exit(-1);
-        }
-
-        struct stat st;
-
-        if (stat(path_log, &st) == -1)
-        {
-            printf("Error: Could not access %s\n", path_log);
-            exit(-1);
-        }
-
-        char operationlog[1024] = "";  //operation Time Role User
-        snprintf(operationlog, sizeof(operationlog), "%s %s %s %s\n", argv[5], ctime(&st.st_mtime), argv[2], argv[4]);
-
-
-        write(log, operationlog, strlen(operationlog));
-
-        close(log);
 
     }
 
